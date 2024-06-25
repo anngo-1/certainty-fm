@@ -39,7 +39,22 @@ def load_raster(path, crop=None):
             img = img[:, -crop[0]:, -crop[1]:]
     return img
 
-
+def enhance_raster_for_visualization(raster, ref_img=None):
+    if ref_img is None:
+        ref_img = raster
+    channels = []
+    for channel in range(raster.shape[0]):
+        valid_mask = np.ones_like(ref_img[channel], dtype=bool)
+        valid_mask[ref_img[channel] == NO_DATA_FLOAT] = False
+        mins, maxs = np.percentile(ref_img[channel][valid_mask], PERCENTILES)
+        normalized_raster = (raster[channel] - mins) / (maxs - mins)
+        normalized_raster[~valid_mask] = 0
+        clipped = np.clip(normalized_raster, 0, 1)
+        channels.append(clipped)
+    clipped = np.stack(channels)
+    channels_last = np.moveaxis(clipped, 0, -1)[..., :3]
+    rgb = channels_last[..., ::-1]
+    return rgb
 
 def reg_inference(model, image_path, gpu):
     """function to run inference on the prithvi model with any given images. make sure orignal_model/model.pth exists. this is an original copy of the finetuned model"""
@@ -155,7 +170,9 @@ if __name__ == "__main__":
     else:
         print("Not using GPU")
 
-    if args.stop > 0 and args.stop!= -1:
+    if args.stop== -1:
+        print("No early stopping.")
+    elif args.stop>0:
         print(f"Stopping inference on image {args.stop}")
     else:
         print("Invalid stopping count. --stop must be >=1")
@@ -235,7 +252,7 @@ if __name__ == "__main__":
 
         # write data to file 
         json_data = json.dumps(metrics)
-        with open("metrics.json", 'w') as json_file:
+        with open(f"metrics{args.mc}.json", 'w') as json_file:
             json_file.write(json_data)
 
 
@@ -250,19 +267,18 @@ if __name__ == "__main__":
         image_folder = os.path.join(base_dir, os.path.splitext(os.path.basename(image_path))[0])
         os.makedirs(image_folder, exist_ok=True)
 
-        orig[0] = orig[0].astype(np.uint8)
-        arr = arr.astype(np.uint8)
+    
         mode_arr = mode_arr.astype(np.uint8)
 
-        # Save original image
-        orig_image = Image.fromarray(orig[0])
-        orig_image.save(os.path.join(image_folder, "original_image.jpg"))
 
-        # Save certainty_estimate image
-        arr_image = Image.fromarray(arr)
-        arr_image.save(os.path.join(image_folder, "certainty_estimate.jpg"))
-
-        # Save mode_arr image
-        mode_arr_image = Image.fromarray(mode_arr)
-        mode_arr_image.save(os.path.join(image_folder, "mode_arr.jpg"))
-
+        
+        plt.imsave(os.path.join(image_folder, "original_image.jpg"), enhance_raster_for_visualization(load_raster(image_path)))
+    
+        
+        plt.imsave(os.path.join(image_folder, "original_pred.jpg"), orig[0])
+        
+        # Save certainty_estimate image with viridis color map
+        plt.imsave(os.path.join(image_folder, f"certainty_estimate_viridis{args.mc}.jpg"), arr, cmap='viridis')
+        
+        # Save mode_arr image with viridis color map
+        plt.imsave(os.path.join(image_folder, f"mode_arr_viridis{args.mc}.jpg"), mode_arr, cmap='viridis')
