@@ -4,19 +4,11 @@ This repository implements MC dropout certainty estimation for the Prithvi-100M 
 
 ## Setup
 
-Please install the conda environment using:
+Please follow the setup instructions in this repository:
+https://github.com/NASA-IMPACT/hls-foundation-os
 
-```
-conda env create -f {environment}.yml
-```
 
-Then, activate the enviroment with:
-
-```
-conda activate prithvi_certainty
-```
-
-Download the Sen1Floods11 dataset 
+Then, download the Sen1Floods11 dataset 
 
 ```
 gsutil -m rsync -r gs://sen1floods11 .
