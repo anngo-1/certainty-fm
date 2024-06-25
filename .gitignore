@@ -3,3 +3,5 @@ v1.1
 inference_images
 original_model
 .DS_Store
+hls-foundation-os
+metrics.json
