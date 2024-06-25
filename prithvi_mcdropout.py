@@ -240,26 +240,26 @@ if __name__ == "__main__":
 
     # OPTIONAL - IMAGE SAVING
 
-    # base_dir = "inference_images"
+        base_dir = "inference_images"
 
-    # os.makedirs(base_dir, exist_ok=True)
+        os.makedirs(base_dir, exist_ok=True)
 
-    # image_folder = os.path.join(base_dir, os.path.splitext(os.path.basename(image_path))[0])
-    # os.makedirs(image_folder, exist_ok=True)
+        image_folder = os.path.join(base_dir, os.path.splitext(os.path.basename(image_path))[0])
+        os.makedirs(image_folder, exist_ok=True)
 
-    # orig[0] = orig[0].astype(np.uint8)
-    # arr = arr.astype(np.uint8)
-    # mode_arr = mode_arr.astype(np.uint8)
+        orig[0] = orig[0].astype(np.uint8)
+        arr = arr.astype(np.uint8)
+        mode_arr = mode_arr.astype(np.uint8)
 
-    # # Save original image
-    # orig_image = Image.fromarray(orig[0])
-    # orig_image.save(os.path.join(image_folder, "original_image.jpg"))
+        # Save original image
+        orig_image = Image.fromarray(orig[0])
+        orig_image.save(os.path.join(image_folder, "original_image.jpg"))
 
-    # # Save certainty_estimate image
-    # arr_image = Image.fromarray(arr)
-    # arr_image.save(os.path.join(image_folder, "certainty_estimate.jpg"))
+        # Save certainty_estimate image
+        arr_image = Image.fromarray(arr)
+        arr_image.save(os.path.join(image_folder, "certainty_estimate.jpg"))
 
-    # # Save mode_arr image
-    # mode_arr_image = Image.fromarray(mode_arr)
-    # mode_arr_image.save(os.path.join(image_folder, "mode_arr.jpg"))
+        # Save mode_arr image
+        mode_arr_image = Image.fromarray(mode_arr)
+        mode_arr_image.save(os.path.join(image_folder, "mode_arr.jpg"))
 
