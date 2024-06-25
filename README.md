@@ -7,7 +7,7 @@ This repository implements MC dropout certainty estimation for the Prithvi-100M 
 Please install the conda environment using:
 
 ```
-conda env create -f environment.yml
+conda env create -f {environment}.yml
 ```
 
 Then, activate the enviroment with:
