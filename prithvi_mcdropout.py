@@ -9,10 +9,11 @@ ARGS:
 --mc (int) (specify number of montecarlo dropout trials for certainty estimation. default is 3.)
 
 e.g.
-python prithvi_mcdropout.py --gpu --stop 2 --mc 2
+python prithvi_mcdropout.py --gpu True --stop 2 --mc 2
 """
 import argparse
 import os
+import socket
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -95,7 +96,7 @@ def get_monte_carlo_predictions(model, forward_passes, image_path, gpu):
 
     # inference
     for _ in range(forward_passes):
-        enable_dropout(copy_model, drop=random.random())
+        enable_dropout(copy_model, drop=random.uniform(0, 0.5))
         copy_test_pipeline = process_test_pipeline(copy_model.cfg.data.test.pipeline)
         result = inference_segmentor(copy_model, image_path, custom_test_pipeline=copy_test_pipeline)
         predictions.append(result)
@@ -109,20 +110,23 @@ def heatmap(preds):
 
     stacked_arrays = np.stack([arr[0] for arr in preds], axis=0)
     variance_array = np.var(stacked_arrays, axis=0)
+    
     mode_array = stats.mode(stacked_arrays, axis=0)[0]
 
+
+    
     return variance_array, mode_array
 
 
 
 
-def eval_certainty(mode_array, groundtruth, orig):
+def eval_certainty(mod_array, groundtruth, orig):
     """this function evaluates specified certainty pixels against ground truth labels. it will also compute IoU, mIoU, F1, """
 
     
-    results = {"Original_IoU" : 0, "Original_mIoU" : 0, "Original_F1" : 0, "Original_mF1": 0, "MC_IoU": 0, "MC_mIoU" : 0, "MC_F1":0, "MC_mF1":0}
+    results = {"Original_IoU" : 0, "Original_mIoU" : 0, "Original_F1" : 0, "Original_mF1": 0, "MC_IoU": 0, "MC_mIoU" : 0, "MC_F1":0, "MC_mF1":0, "MC_recall": 0, "Original_recall":0}
     groundtruth = load_raster(groundtruth)[0]
-    mode_array = np.where(mode_array == -1, 0, mode_array)
+    mod_array = np.where(mod_array == -1, 0, mode_array)
     groundtruth = np.where(groundtruth == -1, 0, groundtruth)
 
 
@@ -132,7 +136,7 @@ def eval_certainty(mode_array, groundtruth, orig):
     results["Original_IoU"] = original_IoU
 
     # MC IoU calculation 
-    correct_matches = np.sum(np.logical_and(mode_array == 1, groundtruth == 1))
+    correct_matches = np.sum(np.logical_and(mod_array == 1, groundtruth == 1))
     certainty_IoU = correct_matches / total_elements
     results["MC_IoU"] = certainty_IoU
 
@@ -142,9 +146,47 @@ def eval_certainty(mode_array, groundtruth, orig):
     original_mIoU = correct_matches / total_elements
     results["Original_mIoU"] = original_mIoU
 
-    correct_matches = np.sum(mode_array == groundtruth)
+    correct_matches = np.sum(mod_array == groundtruth)
     certainty_mIoU = correct_matches / total_elements
     results["MC_mIoU"] = certainty_mIoU
+
+
+    
+
+    
+
+    # # Original F1 calculation
+    # original_tp = np.sum(np.logical_and(orig[0] == 1, orig[0] == 1))
+    # original_fp = np.sum(np.logical_and(orig[0] != ground_truth, orig[0] == 1)
+    # precision = original_tp/ original_tp + original+fp
+    # recall = original_tp / np.sum(groundtruth == 1)
+    
+    # original_F1 = 2 * (precision * recall) / (precision + recall)
+    # results["Original_F1"] = original_F1
+    
+    # # MC F1 calculation
+    # certainty_F1 = 2 * (precision * recall) / (precision + recall)
+    # results["MC_F1"] = certainty_F1
+    
+    # # mF1 calculations (F1 for all classes)
+    # mc_tp = np.sum(np.logical_and(orig[0] == 1, orig[0] == 1))
+    # mc_fp = np.sum(np.logical_and(orig[0] != ground_truth, orig[0] == 1)
+    # precision = mc_tp / (mc_tp + mc_fp)
+    # recall = mc_tp / np.sum(groundtruth == 1)
+    
+    # # Original mF1
+    # original_mF1 = 2 * (precision * recall) / (precision + recall)
+    # results["Original_mF1"] = original_mF1
+    
+    # # MC mF1
+    # certainty_mF1 = 2 * (precision * recall) / (precision + recall)
+    # results["MC_mF1"] = certainty_mF1
+    
+    
+    
+
+
+    
     return results 
 
 
@@ -153,19 +195,23 @@ if __name__ == "__main__":
     NO_DATA = -9999
     NO_DATA_FLOAT = 0.0001
     PERCENTILES = (0.1, 99.9)
-
-
+    MULTIPLE_GPU = False
+    
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', type=bool, default=False, help='Use GPU or not')
+    parser.add_argument('--gpu', type=int, default=0, help='Use GPU or not')
     parser.add_argument('--stop', type=int, default=-1, help='Early stopping mechanism during inference')
     parser.add_argument('--mc', type=int, default=3, help="Certainty simulation count")
 
     args = parser.parse_args()
 
 
-
-    if args.gpu == True:
+    # TODO: implement multiple gpu inference
+    if args.gpu == 1:
         print("Using GPU")
+        device="cuda"
+    elif args.gpu>1:
+        MULTIPLE_GPU = True
+        print("Using multiple GPU")
         device="cuda"
     else:
         print("Not using GPU")
@@ -198,6 +244,7 @@ if __name__ == "__main__":
     config_path=hf_hub_download(repo_id="ibm-nasa-geospatial/Prithvi-100M-sen1floods11", filename="sen1floods11_Prithvi_100M.py")
     ckpt=hf_hub_download(repo_id="ibm-nasa-geospatial/Prithvi-100M-sen1floods11", filename='sen1floods11_Prithvi_100M.pth')
     finetuned_model = init_segmentor(Config.fromfile(config_path), ckpt, device)
+    
 
     if os.path.exists("original_model/model.pth") == False:
         os.mkdir("original_model")
@@ -252,7 +299,7 @@ if __name__ == "__main__":
 
         # write data to file 
         json_data = json.dumps(metrics)
-        with open(f"metrics{args.mc}.json", 'w') as json_file:
+        with open(f"metrics_2{args.mc}.json", 'w') as json_file:
             json_file.write(json_data)
 
 
@@ -260,7 +307,7 @@ if __name__ == "__main__":
 
     # OPTIONAL - IMAGE SAVING
 
-        base_dir = "inference_images"
+        base_dir = "inference_images2"
 
         os.makedirs(base_dir, exist_ok=True)
 
@@ -274,6 +321,8 @@ if __name__ == "__main__":
         
         plt.imsave(os.path.join(image_folder, "original_image.jpg"), enhance_raster_for_visualization(load_raster(image_path)))
     
+        plt.imsave(os.path.join(image_folder, "ground_truth.jpg"), load_raster(ground_truth_path)[0])
+
         
         plt.imsave(os.path.join(image_folder, "original_pred.jpg"), orig[0])
         
