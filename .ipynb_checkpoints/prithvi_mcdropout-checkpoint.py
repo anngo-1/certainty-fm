@@ -11,6 +11,7 @@ ARGS:
 e.g.
 python prithvi_mcdropout.py --gpu True --stop 2 --mc 2
 """
+from skimage import filters, morphology, segmentation, exposure
 import argparse
 import os
 import socket
@@ -29,6 +30,30 @@ import matplotlib
 import json
 from PIL import Image
 import sys
+
+def stretch_rgb(rgb):
+    
+    ls_pct=1
+    pLow, pHigh = np.percentile(rgb[~np.isnan(rgb)], (ls_pct,100-ls_pct))
+    img_rescale = exposure.rescale_intensity(rgb, in_range=(pLow,pHigh))
+    
+    return img_rescale
+
+def open_tiff(fname):
+    
+    with rasterio.open(fname, "r") as src:
+        
+        data = src.read()
+        
+    return data
+def get_meta(fname):
+    
+    with rasterio.open(fname, "r") as src:
+        
+        meta = src.meta
+        
+    return meta
+
 
 def load_raster(path, crop=None):
     with rasterio.open(path) as src:
@@ -63,12 +88,23 @@ def reg_inference(model, image_path, gpu):
     if gpu:
         device="cuda"
 
-
     copy_model = torch.load('original_model/model.pth', map_location=torch.device(device))
     copy_model.load_state_dict(model.state_dict())
     copy_model.eval()
     copy_test_pipeline = process_test_pipeline(copy_model.cfg.data.test.pipeline)
+
+    
     result = inference_segmentor(copy_model, image_path, custom_test_pipeline=copy_test_pipeline)
+
+
+    mask = open_tiff(image_path)
+    rgb = stretch_rgb((mask[[3, 2, 1], :, :].transpose((1,2,0))/10000*255).astype(np.uint8))
+    meta = get_meta(image_path)
+    mask = np.where(mask == meta['nodata'], 1, 0)
+    mask = np.max(mask, axis=0)[None]
+
+    result = np.where(mask == 1, 0, result*255)
+    
     return result
 
 
@@ -77,10 +113,10 @@ def enable_dropout(model, drop):
     """ function to enable the dropout layers during test-time, along with adding changing the dropout rate based on a randomized parameter. """
 
     for m in model.modules():
-        if m.__class__.__name__.startswith('Dropout'):
-            m.train()
-            m.p = drop
-            
+        if m.__class__.__name__.startswith('Dropout') and m.__class__.__name__ != "Dropout2d":
+                m.train()
+                m.p = drop
+        
 
 def get_monte_carlo_predictions(model, forward_passes, image_path, gpu):
     """ function to perform inference with monte carlo dropout. calls enable_dropout function and returns monte carlo dropout predictions."""
@@ -90,15 +126,27 @@ def get_monte_carlo_predictions(model, forward_passes, image_path, gpu):
         device="cuda"
     # load the model from disk and load state dict to avoid changing the original model
     copy_model = torch.load('original_model/model.pth', map_location=torch.device(device))
-    copy_model.load_state_dict(model.state_dict())
-    copy_model.train()  
     predictions = []
 
     # inference
     for _ in range(forward_passes):
-        enable_dropout(copy_model, drop=random.uniform(0, 0.5))
+        
+
+        copy_model.load_state_dict(model.state_dict())
+        enable_dropout(copy_model, drop=random.uniform(0.05, 0.5)) 
         copy_test_pipeline = process_test_pipeline(copy_model.cfg.data.test.pipeline)
         result = inference_segmentor(copy_model, image_path, custom_test_pipeline=copy_test_pipeline)
+      
+        mask = open_tiff(image_path)
+        rgb = stretch_rgb((mask[[3, 2, 1], :, :].transpose((1,2,0))/10000*255).astype(np.uint8))
+        meta = get_meta(image_path)
+        mask = np.where(mask == meta['nodata'], 1, 0)
+        mask = np.max(mask, axis=0)[None]
+
+        result = np.where(mask == 1, 0, result*255)
+        
+
+        
         predictions.append(result)
         
     return predictions
@@ -110,21 +158,24 @@ def heatmap(preds):
 
     stacked_arrays = np.stack([arr[0] for arr in preds], axis=0)
     variance_array = np.var(stacked_arrays, axis=0)
-    
+    certainty_estimate = np.mean(stacked_arrays == 1, axis=0, dtype=np.float64)
     mode_array = stats.mode(stacked_arrays, axis=0)[0]
 
+
+    
     return variance_array, mode_array
 
 
 
 
-def eval_certainty(mode_array, groundtruth, orig):
+def eval_certainty(mod_array, groundtruth, orig):
     """this function evaluates specified certainty pixels against ground truth labels. it will also compute IoU, mIoU, F1, """
 
     
     results = {"Original_IoU" : 0, "Original_mIoU" : 0, "Original_F1" : 0, "Original_mF1": 0, "MC_IoU": 0, "MC_mIoU" : 0, "MC_F1":0, "MC_mF1":0, "MC_recall": 0, "Original_recall":0}
+    
     groundtruth = load_raster(groundtruth)[0]
-    mode_array = np.where(mode_array == -1, 0, mode_array)
+    mod_array = np.where(mod_array == -1, 0, mod_array)
     groundtruth = np.where(groundtruth == -1, 0, groundtruth)
 
 
@@ -134,7 +185,7 @@ def eval_certainty(mode_array, groundtruth, orig):
     results["Original_IoU"] = original_IoU
 
     # MC IoU calculation 
-    correct_matches = np.sum(np.logical_and(mode_array == 1, groundtruth == 1))
+    correct_matches = np.sum(np.logical_and(mod_array == 1, groundtruth == 1))
     certainty_IoU = correct_matches / total_elements
     results["MC_IoU"] = certainty_IoU
 
@@ -144,7 +195,7 @@ def eval_certainty(mode_array, groundtruth, orig):
     original_mIoU = correct_matches / total_elements
     results["Original_mIoU"] = original_mIoU
 
-    correct_matches = np.sum(mode_array == groundtruth)
+    correct_matches = np.sum(mod_array == groundtruth)
     certainty_mIoU = correct_matches / total_elements
     results["MC_mIoU"] = certainty_mIoU
 
@@ -304,7 +355,8 @@ if __name__ == "__main__":
 
 
     # OPTIONAL - IMAGE SAVING
-
+  
+ 
         base_dir = "inference_images2"
 
         os.makedirs(base_dir, exist_ok=True)
@@ -314,7 +366,6 @@ if __name__ == "__main__":
 
     
         mode_arr = mode_arr.astype(np.uint8)
-
 
         
         plt.imsave(os.path.join(image_folder, "original_image.jpg"), enhance_raster_for_visualization(load_raster(image_path)))
