@@ -30,6 +30,7 @@ import matplotlib
 import json
 from PIL import Image
 import sys
+import imageio
 
 def stretch_rgb(rgb):
     
@@ -82,14 +83,13 @@ def enhance_raster_for_visualization(raster, ref_img=None):
     rgb = channels_last[..., ::-1]
     return rgb
 
-def reg_inference(model, image_path, gpu):
+def reg_inference(image_path, gpu):
     """function to run inference on the prithvi model with any given images. make sure orignal_model/model.pth exists. this is an original copy of the finetuned model"""
     device="cpu"
     if gpu:
         device="cuda"
 
     copy_model = torch.load('original_model/model.pth', map_location=torch.device(device))
-    copy_model.load_state_dict(model.state_dict())
     copy_model.eval()
     copy_test_pipeline = process_test_pipeline(copy_model.cfg.data.test.pipeline)
 
@@ -104,7 +104,7 @@ def reg_inference(model, image_path, gpu):
     mask = np.max(mask, axis=0)[None]
 
     result = np.where(mask == 1, 0, result*255)
-    
+    del copy_model
     return result
 
 
@@ -113,12 +113,13 @@ def enable_dropout(model, drop):
     """ function to enable the dropout layers during test-time, along with adding changing the dropout rate based on a randomized parameter. """
 
     for m in model.modules():
-        if m.__class__.__name__.startswith('Dropout') and m.__class__.__name__ != "Dropout2d":
+        drop = random.uniform(0,0.5)
+        if m.__class__.__name__.startswith('Dropout') and m.__class__.__name__ != "Dropout2d" and random.random() > 0.2:
                 m.train()
                 m.p = drop
         
 
-def get_monte_carlo_predictions(model, forward_passes, image_path, gpu):
+def get_monte_carlo_predictions(forward_passes, image_path, gpu):
     """ function to perform inference with monte carlo dropout. calls enable_dropout function and returns monte carlo dropout predictions."""
 
     device = "cpu"
@@ -131,9 +132,7 @@ def get_monte_carlo_predictions(model, forward_passes, image_path, gpu):
     # inference
     for _ in range(forward_passes):
         
-
-        copy_model.load_state_dict(model.state_dict())
-        enable_dropout(copy_model, drop=random.uniform(0.05, 0.5)) 
+        enable_dropout(copy_model, drop=random.uniform(0, 0.5)) 
         copy_test_pipeline = process_test_pipeline(copy_model.cfg.data.test.pipeline)
         result = inference_segmentor(copy_model, image_path, custom_test_pipeline=copy_test_pipeline)
       
@@ -144,11 +143,10 @@ def get_monte_carlo_predictions(model, forward_passes, image_path, gpu):
         mask = np.max(mask, axis=0)[None]
 
         result = np.where(mask == 1, 0, result*255)
-        
-
-        
+  
         predictions.append(result)
-        
+
+    del copy_model
     return predictions
   
 
@@ -163,7 +161,7 @@ def heatmap(preds):
 
 
     
-    return variance_array, mode_array
+    return certainty_estimate, variance_array, mode_array
 
 
 
@@ -294,12 +292,13 @@ if __name__ == "__main__":
     ckpt=hf_hub_download(repo_id="ibm-nasa-geospatial/Prithvi-100M-sen1floods11", filename='sen1floods11_Prithvi_100M.pth')
     finetuned_model = init_segmentor(Config.fromfile(config_path), ckpt, device)
     
-
-    if os.path.exists("original_model/model.pth") == False:
-        os.mkdir("original_model")
+    if not os.path.exists("original_model/model.pth"):
+        os.makedirs("original_model", exist_ok=True) 
         torch.save(finetuned_model, "original_model/model.pth")
 
-
+    del finetuned_model
+    del ckpt
+    del config_path
     images={}
     metrics={}
     
@@ -314,6 +313,8 @@ if __name__ == "__main__":
             break
 
 
+        if filename == ".ipynb_checkpoints":
+            continue
 
         imgname = filename.split("_")
         imgname=f"{imgname[0]}_{imgname[1]}_S2Hand.tif"
@@ -335,20 +336,20 @@ if __name__ == "__main__":
         print(f"Image: {image_path} \nLabel: {filepath}")
 
         # inference with Prithvi and certainty estimation + evaluation
-        orig = reg_inference(finetuned_model, image_path, args.gpu)
-        mc_preds = get_monte_carlo_predictions(finetuned_model, args.mc, image_path, args.gpu)
-        arr, mode_arr=heatmap(mc_preds)
+        orig = reg_inference(image_path, args.gpu)
+        mc_preds = get_monte_carlo_predictions(args.mc, image_path, args.gpu)
+        certainty_arr, arr, mode_arr=heatmap(mc_preds)
         results = eval_certainty(mode_arr, ground_truth_path, orig)
 
         metrics[image_path] = results
-        images[image_path] = {"original_image": orig[0], "certainty_estimate":arr, "mode_arr": mode_arr}
+        # images[image_path] = {"original_image": orig[0], "mode_arr":arr, "mode_arr": mode_arr}
 
         print(results)
         stop_count+=1
 
         # write data to file 
         json_data = json.dumps(metrics)
-        with open(f"metrics_2{args.mc}.json", 'w') as json_file:
+        with open(f"metrics_{args.mc}.json", 'w') as json_file:
             json_file.write(json_data)
 
 
@@ -357,7 +358,7 @@ if __name__ == "__main__":
     # OPTIONAL - IMAGE SAVING
   
  
-        base_dir = "inference_images2"
+        base_dir = "inference_images3"
 
         os.makedirs(base_dir, exist_ok=True)
 
@@ -368,15 +369,21 @@ if __name__ == "__main__":
         mode_arr = mode_arr.astype(np.uint8)
 
         
-        plt.imsave(os.path.join(image_folder, "original_image.jpg"), enhance_raster_for_visualization(load_raster(image_path)))
+        # plt.imsave(os.path.join(image_folder, "original_image.jpg"), enhance_raster_for_visualization(load_raster(image_path)))
     
-        plt.imsave(os.path.join(image_folder, "ground_truth.jpg"), load_raster(ground_truth_path)[0])
+        # plt.imsave(os.path.join(image_folder, "ground_truth.jpg"), load_raster(ground_truth_path)[0])
 
         
-        plt.imsave(os.path.join(image_folder, "original_pred.jpg"), orig[0])
+        # plt.imsave(os.path.join(image_folder, "original_pred.jpg"), orig[0])
+
+        # plt.imsave(os.path.join(image_folder, f"variance_arr{args.mc}.jpg"), arr)       
+        # # Save certainty_estimate image with viridis color map
+        # plt.imsave(os.path.join(image_folder, f"certainty_arr{args.mc}.jpg"), certainty_arr)
         
-        # Save certainty_estimate image with viridis color map
-        plt.imsave(os.path.join(image_folder, f"certainty_estimate_viridis{args.mc}.jpg"), arr, cmap='viridis')
-        
-        # Save mode_arr image with viridis color map
-        plt.imsave(os.path.join(image_folder, f"mode_arr_viridis{args.mc}.jpg"), mode_arr, cmap='viridis')
+        # # Save mode_arr image with viridis color map
+        # plt.imsave(os.path.join(image_folder, f"mode_arr{args.mc}.jpg"), mode_arr)
+        np.save(f'{image_folder}/original_pred{args.mc}.npy', load_raster(image_path)[0])
+        np.save(f'{image_folder}/groundtruth_arr{args.mc}.npy', load_raster(ground_truth_path)[0])
+        np.save(f'{image_folder}/variance_arr{args.mc}.npy', arr)
+        np.save(f'{image_folder}/certainty_arr{args.mc}.npy', certainty_arr)
+  
